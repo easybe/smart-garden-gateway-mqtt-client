@@ -1,5 +1,8 @@
 use tokio::{task, time};
 
+use nng::options::protocol::pubsub::Subscribe;
+use nng::options::Options;
+use nng::{Protocol, Socket};
 use rumqttc::Event::Incoming;
 use rumqttc::Packet::Publish;
 use rumqttc::{self, AsyncClient, MqttOptions, QoS};
@@ -19,8 +22,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .unwrap();
 
+    let nng_sub = nng_subscribe();
+
     task::spawn(async move {
-        mqtt_publisher(mqtt_client).await;
+        mqtt_publisher(mqtt_client, nng_sub).await;
     });
 
     loop {
@@ -39,13 +44,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-async fn mqtt_publisher(mqtt_client: AsyncClient) {
-    for i in 1..=10 {
-        mqtt_client
-            .publish("/test/out", QoS::ExactlyOnce, false, format!("Hello {}", i))
-            .await
-            .unwrap();
+async fn mqtt_publisher(mqtt_client: AsyncClient, nng_sub: Socket) {
+    loop {
+        match nng_sub.try_recv() {
+            Ok(data) => {
+                let msg = String::from_utf8_lossy(&data);
 
-        time::sleep(Duration::from_secs(10)).await;
+                println!("NNG msg: {msg:?}");
+
+                mqtt_client
+                    .publish("/test/out", QoS::ExactlyOnce, false, msg.as_bytes())
+                    .await
+                    .unwrap();
+            }
+            Err(e) => match e {
+                nng::Error::TryAgain => {}
+                _ => {
+                    println!("NNG error: {e:?}");
+                }
+            },
+        }
+        time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+fn nng_subscribe() -> Socket {
+    let socket = Socket::new(Protocol::Sub0).unwrap();
+    socket.dial("ipc:///tmp/lemonbeatd-event.ipc").unwrap();
+    let all_topics = vec![];
+    socket.set_opt::<Subscribe>(all_topics).unwrap();
+    socket
 }
