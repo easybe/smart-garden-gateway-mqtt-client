@@ -1,5 +1,8 @@
 use tokio::{task, time};
 
+use nng::options::protocol::pubsub::Subscribe;
+use nng::options::Options;
+use nng::{Protocol, Socket};
 use rumqttc::Event::Incoming;
 use rumqttc::Packet::Publish;
 use rumqttc::{self, AsyncClient, MqttOptions, QoS};
@@ -19,8 +22,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .unwrap();
 
-    task::spawn(async move {
-        mqtt_publisher(mqtt_client).await;
+    let lemonbeatd_sub = nng_subscribe("ipc:///tmp/lemonbeatd-event.ipc");
+    task::spawn({
+        let c = mqtt_client.clone();
+        async move {
+            mqtt_publisher(c, lemonbeatd_sub).await;
+        }
+    });
+
+    let lwm2mserver_sub = nng_subscribe("ipc:///tmp/lwm2mserver-event.ipc");
+    task::spawn({
+        let c = mqtt_client.clone();
+        async move {
+            mqtt_publisher(c, lwm2mserver_sub).await;
+        }
     });
 
     loop {
@@ -39,13 +54,36 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-async fn mqtt_publisher(mqtt_client: AsyncClient) {
-    for i in 1..=10 {
-        mqtt_client
-            .publish("/test/out", QoS::ExactlyOnce, false, format!("Hello {}", i))
-            .await
-            .unwrap();
+async fn mqtt_publisher(mqtt_client: AsyncClient, nng_sub: Socket) {
+    loop {
+        match nng_sub.try_recv() {
+            Ok(data) => {
+                let msg = String::from_utf8_lossy(&data);
 
-        time::sleep(Duration::from_secs(10)).await;
+                println!("NNG msg: {msg:?}");
+
+                if let Err(e) = mqtt_client
+                    .publish("/test/out", QoS::ExactlyOnce, false, msg.as_bytes())
+                    .await
+                {
+                    println!("Failed to publish MQTT message: {e:?}");
+                }
+            }
+            Err(e) => match e {
+                nng::Error::TryAgain => {}
+                _ => {
+                    println!("NNG error: {e:?}");
+                }
+            },
+        }
+        time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+fn nng_subscribe(url: &str) -> Socket {
+    let socket = Socket::new(Protocol::Sub0).unwrap();
+    socket.dial(url).unwrap();
+    let all_topics = vec![];
+    socket.set_opt::<Subscribe>(all_topics).unwrap();
+    socket
 }
