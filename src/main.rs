@@ -23,13 +23,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap();
 
     let lemonbeatd_sub = nng_subscribe("ipc:///tmp/lemonbeatd-event.ipc");
-    let lemonbeatd_task = task::spawn(async {
-        mqtt_publisher(&mqtt_client, lemonbeatd_sub).await;
+    task::spawn({
+        let c = mqtt_client.clone();
+        async move {
+            mqtt_publisher(c, lemonbeatd_sub).await;
+        }
     });
 
     let lwm2mserver_sub = nng_subscribe("ipc:///tmp/lwm2mserver-event.ipc");
-    let lwm2mserver_task = task::spawn(async {
-        mqtt_publisher(&mqtt_client, lwm2mserver_sub).await;
+    task::spawn({
+        let c = mqtt_client.clone();
+        async move {
+            mqtt_publisher(c, lwm2mserver_sub).await;
+        }
     });
 
     loop {
@@ -48,7 +54,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-async fn mqtt_publisher(mqtt_client: &AsyncClient, nng_sub: Socket) {
+async fn mqtt_publisher(mqtt_client: AsyncClient, nng_sub: Socket) {
     loop {
         match nng_sub.try_recv() {
             Ok(data) => {
