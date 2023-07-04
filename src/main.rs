@@ -5,53 +5,65 @@ use nng::options::Options;
 use nng::{Protocol, Socket};
 use rumqttc::Event::Incoming;
 use rumqttc::Packet::Publish;
-use rumqttc::{self, AsyncClient, MqttOptions, QoS};
+use rumqttc::{self, AsyncClient, EventLoop, MqttOptions, QoS};
 use std::error::Error;
 use std::time::Duration;
 
+const LEMONBEATD_EVENT_URI: &str = "ipc:///tmp/lemonbeatd-event.ipc";
+const LWM2MSERVER_EVENT_URI: &str = "ipc:///tmp/lwm2mserver-event.ipc";
+
 #[tokio::main(worker_threads = 1)]
 async fn main() -> Result<(), Box<dyn Error>> {
+    loop {
+        match mqtt_init().await {
+            Ok((_, mut mqtt_event_loop)) => loop {
+                let mqtt_event = mqtt_event_loop.poll().await;
+                match &mqtt_event {
+                    Ok(v) => {
+                        if let Incoming(Publish(p)) = v {
+                            println!("{:?}", p.payload);
+                        }
+                    }
+                    Err(e) => {
+                        println!("MQTT error: {e:?}");
+                        time::sleep(Duration::from_secs(30)).await;
+                    }
+                }
+            },
+            Err(e) => {
+                println!("{e:?}");
+                time::sleep(Duration::from_secs(10)).await;
+            }
+        }
+    }
+}
+
+async fn mqtt_init() -> Result<(AsyncClient, EventLoop), Box<dyn std::error::Error>> {
     let mut mqtt_options = MqttOptions::new("test", "localhost", 1883);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     mqtt_options.set_clean_session(false);
 
-    let (mqtt_client, mut mqtt_event_loop) = AsyncClient::new(mqtt_options, 10);
-
-    mqtt_client
-        .subscribe("/test/in", QoS::AtMostOnce)
-        .await
-        .unwrap();
-
-    let lemonbeatd_sub = nng_subscribe("ipc:///tmp/lemonbeatd-event.ipc");
-    task::spawn({
-        let c = mqtt_client.clone();
-        async move {
-            mqtt_publisher(c, lemonbeatd_sub).await;
-        }
-    });
-
-    let lwm2mserver_sub = nng_subscribe("ipc:///tmp/lwm2mserver-event.ipc");
-    task::spawn({
-        let c = mqtt_client.clone();
-        async move {
-            mqtt_publisher(c, lwm2mserver_sub).await;
-        }
-    });
-
-    loop {
-        let mqtt_event = mqtt_event_loop.poll().await;
-        match &mqtt_event {
-            Ok(v) => {
-                if let Incoming(Publish(p)) = v {
-                    println!("{:?}", p.payload);
-                }
+    let (mqtt_client, mqtt_event_loop) = AsyncClient::new(mqtt_options, 10);
+    {
+        let sub = nng_subscribe(LEMONBEATD_EVENT_URI)?;
+        task::spawn({
+            let c = mqtt_client.clone();
+            async move {
+                mqtt_publisher(c, sub).await;
             }
-            Err(e) => {
-                println!("MQTT error: {e:?}");
-                time::sleep(Duration::from_secs(30)).await;
-            }
-        }
+        });
     }
+    {
+        let sub = nng_subscribe(LWM2MSERVER_EVENT_URI)?;
+        task::spawn({
+            let c = mqtt_client.clone();
+            async move {
+                mqtt_publisher(c, sub).await;
+            }
+        });
+    }
+    mqtt_client.subscribe("/test/in", QoS::AtMostOnce).await?;
+    Ok((mqtt_client, mqtt_event_loop))
 }
 
 async fn mqtt_publisher(mqtt_client: AsyncClient, nng_sub: Socket) {
@@ -80,10 +92,10 @@ async fn mqtt_publisher(mqtt_client: AsyncClient, nng_sub: Socket) {
     }
 }
 
-fn nng_subscribe(url: &str) -> Socket {
-    let socket = Socket::new(Protocol::Sub0).unwrap();
-    socket.dial(url).unwrap();
+fn nng_subscribe(uri: &str) -> Result<Socket, nng::Error> {
+    let socket = Socket::new(Protocol::Sub0)?;
+    socket.dial(uri)?;
     let all_topics = vec![];
-    socket.set_opt::<Subscribe>(all_topics).unwrap();
-    socket
+    socket.set_opt::<Subscribe>(all_topics)?;
+    Ok(socket)
 }
