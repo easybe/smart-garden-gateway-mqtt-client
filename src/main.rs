@@ -1,5 +1,6 @@
 use tokio::{task, time};
 
+use config::Config;
 use nix::unistd::gethostname;
 use nng::options::protocol::pubsub::Subscribe;
 use nng::options::Options;
@@ -9,15 +10,14 @@ use rumqttc::Packet::Publish;
 use rumqttc::{self, AsyncClient, EventLoop, MqttOptions, QoS};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 
+const CONFIG_PATH: &str = "/etc/sg_mqtt_client.conf";
 const LEMONBEATD_COMMAND_URI: &str = "ipc:///tmp/lemonbeatd-command.ipc";
 const LEMONBEATD_EVENT_URI: &str = "ipc:///tmp/lemonbeatd-event.ipc";
 const LWM2MSERVER_COMMAND_URI: &str = "ipc:///tmp/lwm2mserver-command.ipc";
 const LWM2MSERVER_EVENT_URI: &str = "ipc:///tmp/lwm2mserver-event.ipc";
-
-const MQTT_TOPIC_COMMAND: &str = "smart-garden/command";
-const MQTT_TOPIC_EVENT: &str = "smart-garden/event";
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -52,9 +52,13 @@ struct NngMsg {
 }
 
 impl NngMsg {
-    pub fn new(topic: &str, payload: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        topic: &str,
+        payload: &str,
+        topic_base: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let mqtt_path = topic
-            .strip_prefix(&format!("{MQTT_TOPIC_COMMAND}/"))
+            .strip_prefix(&format!("{topic_base}/"))
             .ok_or(Error::BadMqttTopic)?;
         let parts = mqtt_path.split('/').collect::<Vec<&str>>();
         let device = (*parts.first().ok_or(Error::BadMqttTopic)?).to_string();
@@ -75,13 +79,15 @@ impl NngMsg {
 
 #[tokio::main(worker_threads = 1)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = load_config()?;
+
     let nng_req0 = NngReq0 {
         lemonbeatd: nng_connect_req0(LEMONBEATD_COMMAND_URI)?,
         lwm2mserver: nng_connect_req0(LWM2MSERVER_COMMAND_URI)?,
     };
 
     loop {
-        match mqtt_init().await {
+        match mqtt_init(&config).await {
             Ok((_, mut mqtt_event_loop)) => loop {
                 let mqtt_event = mqtt_event_loop.poll().await;
                 match &mqtt_event {
@@ -89,9 +95,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Incoming(Publish(p)) = v {
                             let topic = &p.topic;
                             let payload = String::from_utf8_lossy(&p.payload);
-                            if topic.starts_with(MQTT_TOPIC_COMMAND) {
+                            if topic.starts_with(&config.get::<String>("mqtt_topics.command")?) {
                                 println!("{topic}: {payload}");
-                                if let Err(e) = mqtt_handle_command(&topic, &payload, &nng_req0) {
+                                if let Err(e) =
+                                    mqtt_handle_command(topic, &payload, &nng_req0, &config)
+                                {
                                     println!("Failed to handle MQTT command: {e:?}");
                                 }
                             }
@@ -111,10 +119,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn mqtt_init() -> Result<(AsyncClient, EventLoop), Box<dyn std::error::Error>> {
+fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
+    let mut conf_builder = Config::builder()
+        .set_default("mqtt_broker.host", "localhost")?
+        .set_default("mqtt_broker.port", 1883)?
+        .set_default("mqtt_topics.command", "smart-garden/command")?
+        .set_default("mqtt_topics.event", "smart-garden/event")?;
+    let config_file = Path::new(CONFIG_PATH);
+    if config_file.exists() {
+        conf_builder = conf_builder
+            .add_source(config::File::with_name(CONFIG_PATH).format(config::FileFormat::Ini));
+    }
+    // Search for config file in current directory
+    let config_file_name = config_file.file_name().unwrap();
+    if Path::new(config_file_name).exists() {
+        conf_builder = conf_builder.add_source(
+            config::File::with_name(config_file_name.to_str().unwrap())
+                .format(config::FileFormat::Ini),
+        );
+    }
+    conf_builder =
+        conf_builder.add_source(config::Environment::with_prefix("SG_MQTT_CLIENT").separator("__"));
+
+    let config = conf_builder.build()?;
+    Ok(config)
+}
+
+async fn mqtt_init(
+    config: &Config,
+) -> Result<(AsyncClient, EventLoop), Box<dyn std::error::Error>> {
     let hn = gethostname()?;
     let hostname = hn.to_str().ok_or(Error::BadHostname)?;
-    let mut mqtt_options = MqttOptions::new(hostname, "localhost", 1883);
+    let broker_host = config.get::<String>("mqtt_broker.host")?;
+    let broker_port = config.get::<u16>("mqtt_broker.port")?;
+
+    println!("Connecting to MQTT broker: {broker_host}:{broker_port}");
+
+    let mut mqtt_options = MqttOptions::new(hostname, broker_host, broker_port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     mqtt_options.set_clean_session(false);
 
@@ -122,32 +163,37 @@ async fn mqtt_init() -> Result<(AsyncClient, EventLoop), Box<dyn std::error::Err
     {
         let sub = nng_subscribe(LEMONBEATD_EVENT_URI)?;
         task::spawn({
-            let c = mqtt_client.clone();
+            let mc = mqtt_client.clone();
+            let c = config.clone();
             async move {
-                mqtt_publisher(c, sub).await;
+                mqtt_publisher(mc, sub, c).await;
             }
         });
     }
     {
         let sub = nng_subscribe(LWM2MSERVER_EVENT_URI)?;
         task::spawn({
-            let c = mqtt_client.clone();
+            let mc = mqtt_client.clone();
+            let c = config.clone();
             async move {
-                mqtt_publisher(c, sub).await;
+                mqtt_publisher(mc, sub, c).await;
             }
         });
     }
     mqtt_client
-        .subscribe(format!("{MQTT_TOPIC_COMMAND}/#"), QoS::AtMostOnce)
+        .subscribe(
+            format!("{}/#", config.get::<String>("mqtt_topics.command")?),
+            QoS::AtMostOnce,
+        )
         .await?;
     Ok((mqtt_client, mqtt_event_loop))
 }
 
-async fn mqtt_publisher(mqtt_client: AsyncClient, nng_sub: Socket) {
+async fn mqtt_publisher(mqtt_client: AsyncClient, nng_sub: Socket, config: Config) {
     loop {
         match nng_sub.try_recv() {
             Ok(data) => {
-                if let Err(e) = mqtt_publish(&mqtt_client, data).await {
+                if let Err(e) = mqtt_publish(&mqtt_client, data, &config).await {
                     println!("Failed to publish MQTT message: {e:?}");
                 }
             }
@@ -165,6 +211,7 @@ async fn mqtt_publisher(mqtt_client: AsyncClient, nng_sub: Socket) {
 async fn mqtt_publish(
     mqtt_client: &AsyncClient,
     data: nng::Message,
+    config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let nng_msg_str = String::from_utf8_lossy(&data);
 
@@ -175,9 +222,10 @@ async fn mqtt_publish(
     let device = &nng_msg.entity.device;
     let path = &nng_msg.entity.path;
     let payload = serde_json::to_string(&nng_msg.payload)?;
+    let topic_base = config.get::<String>("mqtt_topics.event")?;
     mqtt_client
         .publish(
-            format!("{MQTT_TOPIC_EVENT}/{device}/{path}"),
+            format!("{topic_base}/{device}/{path}"),
             QoS::ExactlyOnce,
             false,
             payload.as_bytes(),
@@ -190,8 +238,10 @@ fn mqtt_handle_command(
     topic: &str,
     payload: &str,
     nng_req0: &NngReq0,
+    config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let nng_msg = NngMsg::new(&topic, &payload)?;
+    let topic_base = config.get::<String>("mqtt_topics.command")?;
+    let nng_msg = NngMsg::new(topic, payload, &topic_base)?;
     if nng_msg.entity.path.contains("lemonbeat") {
         nng_send(&nng_req0.lemonbeatd, &nng_msg)?;
     } else {
