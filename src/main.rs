@@ -1,5 +1,6 @@
 use tokio::{task, time};
 
+use nix::unistd::gethostname;
 use nng::options::protocol::pubsub::Subscribe;
 use nng::options::Options;
 use nng::{Protocol, Socket};
@@ -24,6 +25,8 @@ pub enum Error {
     BadMqttTopic,
     #[error("Invalid NNG message received")]
     BadNngMsg,
+    #[error("Failed to parse hostname")]
+    BadHostname,
     #[error("Failed to executed command")]
     CommandFailed,
 }
@@ -109,7 +112,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn mqtt_init() -> Result<(AsyncClient, EventLoop), Box<dyn std::error::Error>> {
-    let mut mqtt_options = MqttOptions::new("test", "localhost", 1883);
+    let hn = gethostname()?;
+    let hostname = hn.to_str().ok_or(Error::BadHostname)?;
+    let mut mqtt_options = MqttOptions::new(hostname, "localhost", 1883);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     mqtt_options.set_clean_session(false);
 
