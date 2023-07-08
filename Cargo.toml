@@ -8,6 +8,7 @@ license = "GPL-3.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+config = { version = "0.13.3", features = ["ini"], default-features = false }
 nix = { version = "0.26.2", features = ["hostname"], default-features = false }
 nng = "1.0.1"
 rumqttc = { version = "0.19.0", default-features = false }
