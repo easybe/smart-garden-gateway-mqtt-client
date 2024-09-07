@@ -1,5 +1,5 @@
 [package]
-name = "smart-garden-gateway-mqtt-client"
+name = "sg-mqtt-client"
 version = "0.1.0"
 edition = "2021"
 repository = "https://github.com/easybe/smart-garden-gateway-mqtt-client"
