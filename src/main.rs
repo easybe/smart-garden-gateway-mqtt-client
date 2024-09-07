@@ -1,6 +1,8 @@
 use tokio::{task, time};
 
 use config::Config;
+use env_logger::Env;
+use log::{debug, error, info};
 use nix::unistd::gethostname;
 use nng::options::protocol::pubsub::Subscribe;
 use nng::options::Options;
@@ -79,6 +81,8 @@ impl NngMsg {
 
 #[tokio::main(worker_threads = 1)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+
     let config = load_config()?;
 
     let nng_req0 = NngReq0 {
@@ -96,23 +100,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let topic = &p.topic;
                             let payload = String::from_utf8_lossy(&p.payload);
                             if topic.starts_with(&config.get::<String>("mqtt_topics.command")?) {
-                                println!("{topic}: {payload}");
+                                debug!("{topic}: {payload}");
                                 if let Err(e) =
                                     mqtt_handle_command(topic, &payload, &nng_req0, &config)
                                 {
-                                    println!("Failed to handle MQTT command: {e:?}");
+                                    error!("Failed to handle MQTT command: {e:?}");
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        println!("MQTT error: {e:?}");
+                        error!("MQTT error: {e:?}");
                         time::sleep(Duration::from_secs(30)).await;
                     }
                 }
             },
             Err(e) => {
-                println!("{e:?}");
+                error!("{e:?}");
                 time::sleep(Duration::from_secs(10)).await;
             }
         }
@@ -153,7 +157,7 @@ async fn mqtt_init(
     let broker_host = config.get::<String>("mqtt_broker.host")?;
     let broker_port = config.get::<u16>("mqtt_broker.port")?;
 
-    println!("Connecting to MQTT broker: {broker_host}:{broker_port}");
+    info!("Connecting to MQTT broker: {broker_host}:{broker_port}");
 
     let mut mqtt_options = MqttOptions::new(hostname, broker_host, broker_port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
@@ -194,13 +198,13 @@ async fn mqtt_publisher(mqtt_client: AsyncClient, nng_sub: Socket, config: Confi
         match nng_sub.try_recv() {
             Ok(data) => {
                 if let Err(e) = mqtt_publish(&mqtt_client, data, &config).await {
-                    println!("Failed to publish MQTT message: {e:?}");
+                    error!("Failed to publish MQTT message: {e:?}");
                 }
             }
             Err(e) => match e {
                 nng::Error::TryAgain => {}
                 _ => {
-                    println!("NNG error: {e:?}");
+                    error!("NNG error: {e:?}");
                 }
             },
         }
@@ -215,7 +219,7 @@ async fn mqtt_publish(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let nng_msg_str = String::from_utf8_lossy(&data);
 
-    println!("NNG message: {nng_msg_str}");
+    debug!("NNG message: {nng_msg_str}");
 
     let nng_msgs = serde_json::from_str::<Vec<NngMsg>>(&nng_msg_str)?;
     let nng_msg = nng_msgs.first().ok_or(Error::BadNngMsg)?;
