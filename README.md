@@ -14,7 +14,7 @@ Enable the [community feed].
 
 The minimal required configuration can be created as follows:
 ```
-cat << EOF > /etc/sg_mqtt_client.conf
+cat << EOF > /etc/sg-mqtt-client.conf
 [mqtt_broker]
 host = my-mqtt-broker.lan
 EOF

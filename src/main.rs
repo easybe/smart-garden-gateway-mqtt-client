@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-const CONFIG_PATH: &str = "/etc/sg_mqtt_client.conf";
+const CONFIG_PATH: &str = "/etc/sg-mqtt-client.conf";
 const LEMONBEATD_COMMAND_URI: &str = "ipc:///tmp/lemonbeatd-command.ipc";
 const LEMONBEATD_EVENT_URI: &str = "ipc:///tmp/lemonbeatd-event.ipc";
 const LWM2MSERVER_COMMAND_URI: &str = "ipc:///tmp/lwm2mserver-command.ipc";
