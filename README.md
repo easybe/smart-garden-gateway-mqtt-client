@@ -6,9 +6,10 @@ smart system to be monitored and controlled without the cloud.
 
 ## Prerequisites
 
-Enable the [community feed].
+You will need shell access to your GARDENA smart Gateway. The instructions for
+that can be found in the [smart-garden-gateway-public] repository.
 
-[community feed]: https://github.com/easybe/smart-garden-gateway-community
+[smart-garden-gateway-public]: https://github.com/husqvarnagroup/smart-garden-gateway-public#getting-access
 
 ## Configuration
 
@@ -41,7 +42,7 @@ opkg install sg-mqtt-client
 
 To preserve the application across OS upgrades, you can run:
 ```
-fw_setenv dev_extra_pkgs sg-mqtt-client
+echo sg-mqtt-client >> /etc/devpkgs.conf
 ```
 
 After the installation, the service should automatically start up. To inspect
