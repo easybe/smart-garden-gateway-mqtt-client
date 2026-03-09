@@ -1,3 +1,8 @@
+> [!NOTE]
+> This project has been rendered obsolete by [smart-garden-gateway-websocketd]
+> which is now pre-installed on the Gateway.
+
+[smart-garden-gateway-websocketd]: https://github.com/husqvarnagroup/smart-garden-gateway-websocketd
 
 # Generic GARDENA smart Gateway MQTT client
 
